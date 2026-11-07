@@ -1,0 +1,198 @@
+# Deploys the umbrella release this install pins at unaria-umbrella/, on every push to main and on
+# demand from main. The tools it runs come from that pinned umbrella's scripts package, so they
+# always match the code they deploy. pnpm exits 0 when --filter matches no package, so every command
+# selecting one passes --fail-if-no-match. Actions are pinned to commit SHAs, with the tag each
+# resolved to in the comment. The install's settings are five repository variables
+# (CLOUDFLARE_ACCOUNT_ID, WORKER_NAME, HOSTNAME, GOOGLE_CLIENT_ID, TOFU_STATE_BUCKET) and its
+# reviewed values committed in wrangler.jsonc; only credentials are repository secrets. The
+# Cloudflare API token reaches only the steps that create the resources, apply the migrations,
+# deploy and read the deployment status; the state's passphrase only the OpenTofu step;
+# SUBMODULES_TOKEN only the umbrella's checkout.
+name: deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      plan_only:
+        description: Show OpenTofu's plan and stop, changing and deploying nothing
+        type: boolean
+        default: false
+permissions:
+  contents: read
+# One deploy of this install at a time; a deploy that has started is never cancelled.
+concurrency:
+  group: deploy-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    # A run started by hand on another branch is skipped: only main's configuration is deployed.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # This install's own files; the step after next checks out the umbrella at unaria-umbrella/.
+      - name: Check out this install
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
+      # The umbrella's repository comes from this install's .gitmodules and its commit from the
+      # submodule pointer, so neither is written twice.
+      - name: Read the pinned umbrella
+        id: pin
+        run: |
+          url=$(git config --file .gitmodules --get submodule.unaria-umbrella.url)
+          if [[ ! "$url" =~ ^(git@github\.com:|ssh://git@github\.com/|https://github\.com/)([^/]+/[^/]+)$ ]]; then
+            echo "::error::.gitmodules must give the unaria-umbrella submodule a GitHub URL (got '$url')"
+            exit 1
+          fi
+          echo "repository=${BASH_REMATCH[2]%.git}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD:unaria-umbrella)" >> "$GITHUB_OUTPUT"
+      # The umbrella and its modules are private: SUBMODULES_TOKEN is a read-only token for them,
+      # used over HTTPS and not kept in the checkout. Full history, so the umbrella's release tags
+      # and main are there for the release check. Its modules are checked out at the umbrella's
+      # pointers, one level deep and no further.
+      - name: Check out the pinned umbrella and its modules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.pin.outputs.repository }}
+          ref: ${{ steps.pin.outputs.commit }}
+          path: unaria-umbrella
+          token: ${{ secrets.SUBMODULES_TOKEN }}
+          fetch-depth: 0
+          submodules: true
+          persist-credentials: false
+      # The pnpm version is the umbrella's packageManager, the Node version its .nvmrc.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: unaria-umbrella/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: unaria-umbrella/.nvmrc
+          cache: pnpm
+          cache-dependency-path: unaria-umbrella/pnpm-lock.yaml
+      - name: Install the umbrella's dependencies
+        working-directory: unaria-umbrella
+        run: pnpm install --frozen-lockfile
+      # The umbrella pointer must be a commit on the umbrella's main carrying exactly one tag
+      # vX.Y.Z; that tag is the release. An empty capture, as pnpm leaves it when it runs nothing,
+      # fails the step too.
+      - name: Check that the pinned umbrella is a release
+        id: release
+        working-directory: unaria-umbrella
+        run: |
+          if ! tag=$(pnpm --silent --filter @unaria/scripts --fail-if-no-match check-release-tag "$GITHUB_WORKSPACE/unaria-umbrella") || [ -z "$tag" ]; then
+            echo "::error::The release check named no release tag${tag:+: $tag}"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      # The wrapper would copy everything tofu prints, the plan's JSON included, into step outputs.
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version_file: unaria-umbrella/iac/.opentofu-version
+          tofu_wrapper: false
+      # Creates the state bucket when the account has none of that name, plans, and applies unless
+      # the plan deletes or replaces a resource. The outputs (the resources' names and ids, and the
+      # generated HEALTH_TOKEN, masked first) become this step's outputs. A run started by hand with
+      # plan_only stops after the plan, and every later step but the clean-up skips.
+      - name: Create or update the Cloudflare resources
+        id: infra
+        working-directory: unaria-umbrella
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: ${{ vars.WORKER_NAME }}
+          HOSTNAME: ${{ vars.HOSTNAME }}
+          TOFU_STATE_BUCKET: ${{ vars.TOFU_STATE_BUCKET }}
+          TOFU_STATE_PASSPHRASE: ${{ secrets.TOFU_STATE_PASSPHRASE }}
+          PLAN_ONLY: ${{ inputs.plan_only }}
+        run: |
+          if [ "$PLAN_ONLY" = true ]; then
+            pnpm --filter @unaria/scripts --fail-if-no-match infra plan
+          else
+            pnpm --filter @unaria/scripts --fail-if-no-match infra apply
+            pnpm --filter @unaria/scripts --fail-if-no-match infra output --github-output "$GITHUB_OUTPUT"
+          fi
+      # The install's reviewed values are committed in wrangler.jsonc; this fills only what the
+      # repository variables, the release and the created resources give, and refuses any other
+      # placeholder left in the file.
+      - name: Fill wrangler.jsonc from the repository variables, the release and the resources
+        if: ${{ !inputs.plan_only }}
+        working-directory: unaria-umbrella
+        env:
+          WORKER_NAME: ${{ vars.WORKER_NAME }}
+          HOSTNAME: ${{ vars.HOSTNAME }}
+          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          RELEASE: ${{ steps.release.outputs.tag }}
+          D1_DATABASE_NAME: ${{ steps.infra.outputs.D1_DATABASE_NAME }}
+          D1_DATABASE_ID: ${{ steps.infra.outputs.D1_DATABASE_ID }}
+          R2_BUCKET_NAME: ${{ steps.infra.outputs.R2_BUCKET_NAME }}
+          JOBS_QUEUE_NAME: ${{ steps.infra.outputs.JOBS_QUEUE_NAME }}
+          JOBS_DEAD_LETTER_QUEUE_NAME: ${{ steps.infra.outputs.JOBS_DEAD_LETTER_QUEUE_NAME }}
+        run: pnpm --filter @unaria/scripts --fail-if-no-match fill-config "$GITHUB_WORKSPACE/wrangler.jsonc" "$GITHUB_WORKSPACE/wrangler.filled.jsonc"
+      # Only this step holds the secrets' values: a new file readable by this user only, refused
+      # when the generated HEALTH_TOKEN is missing; an optional secret with no value is left out.
+      - name: Write the Worker secrets file
+        if: ${{ !inputs.plan_only }}
+        working-directory: unaria-umbrella
+        env:
+          HEALTH_TOKEN: ${{ steps.infra.outputs.HEALTH_TOKEN }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          SPARKPOST_API_KEY: ${{ secrets.SPARKPOST_API_KEY }}
+          CHAT_WEBHOOK_URL: ${{ secrets.CHAT_WEBHOOK_URL }}
+        run: |
+          umask 077
+          pnpm --filter @unaria/scripts --fail-if-no-match write-secrets-file "$RUNNER_TEMP/worker-secrets.json" --require HEALTH_TOKEN
+      # Against the umbrella's configuration schema and cron registry and the release's
+      # install-template/wrangler.jsonc, with the secrets the deploy uploads; it names each refused
+      # key and never a secret's value.
+      - name: Check the configuration
+        if: ${{ !inputs.plan_only }}
+        working-directory: unaria-umbrella
+        run: pnpm --filter @unaria/scripts --fail-if-no-match check-config "$GITHUB_WORKSPACE/wrangler.filled.jsonc" --secrets-file "$RUNNER_TEMP/worker-secrets.json"
+      # The single-page application and the merged migrations the next steps read.
+      - name: Build the app
+        if: ${{ !inputs.plan_only }}
+        working-directory: unaria-umbrella
+        run: pnpm --filter @unaria/app --fail-if-no-match build
+      - name: Apply the D1 migrations
+        if: ${{ !inputs.plan_only }}
+        working-directory: unaria-umbrella
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --filter @unaria/app --fail-if-no-match exec wrangler d1 migrations apply DB --remote --config "$GITHUB_WORKSPACE/wrangler.filled.jsonc"
+      # The secrets go up with the version, so the Worker checks the same HEALTH_TOKEN the
+      # verification presents.
+      - name: Deploy, uploading the secrets with the version
+        if: ${{ !inputs.plan_only }}
+        working-directory: unaria-umbrella
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.ndjson
+        run: pnpm --filter @unaria/app --fail-if-no-match exec wrangler deploy --config "$GITHUB_WORKSPACE/wrangler.filled.jsonc" --secrets-file "$RUNNER_TEMP/worker-secrets.json"
+      # Runs whatever the steps before it did, as soon as the deploy no longer needs the file.
+      - name: Remove the Worker secrets file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/worker-secrets.json"
+      - name: Read the deployment status
+        if: ${{ !inputs.plan_only }}
+        working-directory: unaria-umbrella
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --silent --filter @unaria/app --fail-if-no-match exec wrangler deployments status --json --config "$GITHUB_WORKSPACE/wrangler.filled.jsonc" > "$RUNNER_TEMP/deployment.json"
+      - name: Verify that the uploaded version serves and /health reports the release
+        if: ${{ !inputs.plan_only }}
+        working-directory: unaria-umbrella
+        env:
+          HEALTH_TOKEN: ${{ steps.infra.outputs.HEALTH_TOKEN }}
+          RELEASE: ${{ steps.release.outputs.tag }}
+        run: >-
+          pnpm --filter @unaria/scripts --fail-if-no-match verify-deploy
+          --config "$GITHUB_WORKSPACE/wrangler.filled.jsonc"
+          --release "$RELEASE"
+          --wrangler-output "$RUNNER_TEMP/wrangler-output.ndjson"
+          --deployment "$RUNNER_TEMP/deployment.json"

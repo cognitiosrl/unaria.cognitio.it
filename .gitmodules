@@ -1,0 +1,3 @@
+[submodule "unaria-umbrella"]
+	path = unaria-umbrella
+	url = https://github.com/cognitiosrl/unaria-umbrella.git

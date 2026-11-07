@@ -1,0 +1,100 @@
+// The install's Worker configuration. The umbrella is the submodule `unaria-umbrella/`, so every
+// path below starts there. Every install value is a placeholder, `REPLACE_<NAME>`, or
+// `replace-<name>` where Wrangler takes lower case only:
+// - replaced here once by hand with the install's reviewed values and committed, as
+//   `unaria-umbrella/docs/INSTALL.md` describes: `AUTH_PROVIDERS`, `BOOTSTRAP_OWNER_EMAIL`,
+//   `ALLOWED_EMAIL_DOMAINS`, `ALLOWED_EMAILS`, `MODULES`, `DEFAULT_TIME_ZONE`, `DEFAULT_LOCALE`,
+//   `MAIL_FROM`, `ALERT_EMAIL_TO` and the rate limiters' `namespace_id`s;
+// - filled by the deploy on every run (`unaria-umbrella/scripts/fill-config.ts`), which refuses
+//   any other placeholder: `WORKER_NAME`, `HOSTNAME` and `GOOGLE_CLIENT_ID` from the repository
+//   variables of those names, `RELEASE` from the release the install pins, and
+//   `D1_DATABASE_NAME`, `D1_DATABASE_ID`, `R2_BUCKET_NAME`, `JOBS_QUEUE_NAME` and
+//   `JOBS_DEAD_LETTER_QUEUE_NAME` from the resources it creates.
+// Everything else belongs to the code: the configuration check
+// (`unaria-umbrella/scripts/check-config.ts`) refuses a remaining placeholder, a variable the
+// code's configuration schema refuses, a binding, a variable or a cron schedule other than those
+// of this template in the release the install pins, a binding of the Worker's own configuration
+// left out, a cron list other than the Worker's cron registry and an R2 bucket outside the EU
+// jurisdiction.
+{
+  "name": "replace-worker-name",
+  "main": "unaria-umbrella/packages/app/src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // Wrangler sends no usage telemetry from deploy runs.
+  "send_metrics": false,
+  // The Worker answers on the install's own hostname only.
+  "workers_dev": false,
+  "routes": [{ "pattern": "REPLACE_HOSTNAME", "custom_domain": true }],
+  // The Worker's own structured log lines stay on. Cloudflare's invocation log of each request,
+  // which records the client's address and User-Agent, stays off: no IP address is stored.
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } },
+  // The Worker's cron registry, held equal by the configuration check.
+  "triggers": { "crons": ["*/15 * * * *", "0 2 * * *"] },
+  "assets": {
+    "directory": "unaria-umbrella/packages/app/dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true,
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "REPLACE_D1_DATABASE_NAME",
+      "database_id": "REPLACE_D1_DATABASE_ID",
+      // Merged from the kernel's and the modules' migrations by the app's build.
+      "migrations_dir": "unaria-umbrella/packages/app/migrations",
+    },
+  ],
+  "r2_buckets": [
+    { "binding": "FILES", "bucket_name": "replace-r2-bucket-name", "jurisdiction": "eu" },
+  ],
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "REPLACE_JOBS_QUEUE_NAME" }],
+    // A message whose handler keeps failing lands in the dead-letter queue after its retries; the
+    // dead-letter queue has no consumer, so it is inspected and replayed by hand.
+    "consumers": [
+      {
+        "queue": "REPLACE_JOBS_QUEUE_NAME",
+        "max_batch_size": 10,
+        "max_retries": 3,
+        "dead_letter_queue": "REPLACE_JOBS_DEAD_LETTER_QUEUE_NAME",
+      },
+    ],
+  },
+  // Workers Rate Limiting: sign-in requests, API writes and uploads, per user or client address.
+  // Each namespace_id is a positive integer, as a string, unique in the Cloudflare account.
+  "ratelimits": [
+    {
+      "name": "RATE_LIMIT_AUTH",
+      "namespace_id": "1101",
+      "simple": { "limit": 60, "period": 60 },
+    },
+    {
+      "name": "RATE_LIMIT_WRITE",
+      "namespace_id": "1102",
+      "simple": { "limit": 300, "period": 60 },
+    },
+    {
+      "name": "RATE_LIMIT_UPLOAD",
+      "namespace_id": "1103",
+      "simple": { "limit": 60, "period": 60 },
+    },
+  ],
+  "vars": {
+    "ENVIRONMENT": "production",
+    "RELEASE": "REPLACE_RELEASE",
+    "PUBLIC_ORIGIN": "https://REPLACE_HOSTNAME",
+    "AUTH_PROVIDERS": "google,email",
+    "TEST_OIDC": "false",
+    "BOOTSTRAP_OWNER_EMAIL": "m.ferrero@cognitio.it",
+    "ALLOWED_EMAIL_DOMAINS": "cognitio.it",
+    "ALLOWED_EMAILS": "domenico@cdl-dieni.it",
+    "MODULES": "hr",
+    "DEFAULT_TIME_ZONE": "Europe/Rome",
+    "DEFAULT_LOCALE": "it",
+    "MAIL_FROM": "noreply@cognitio.it",
+    "ALERT_EMAIL_TO": "",
+    "GOOGLE_CLIENT_ID": "REPLACE_GOOGLE_CLIENT_ID",
+  },
+}

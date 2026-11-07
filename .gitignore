@@ -1,0 +1,6 @@
+node_modules/
+.wrangler/
+# The configuration filled from the repository variables and the created resources.
+wrangler.filled.jsonc
+# A Worker secrets file passed to `wrangler deploy --secrets-file`.
+*secrets*.json
