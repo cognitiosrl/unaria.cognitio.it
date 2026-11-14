@@ -99,6 +99,7 @@
     "DEFAULT_TIME_ZONE": "Europe/Rome",
     "DEFAULT_LOCALE": "it",
     "MAIL_FROM": "noreply@cognitio.it",
+    "SPARKPOST_REGION": "us",
     "ALERT_EMAIL_TO": "",
     "GOOGLE_CLIENT_ID": "REPLACE_GOOGLE_CLIENT_ID",
   },
