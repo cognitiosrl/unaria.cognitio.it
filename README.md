@@ -42,6 +42,13 @@ The umbrella's `docs/INSTALL.md` (here `unaria-umbrella/docs/INSTALL.md`) is the
    gh secret set CHAT_WEBHOOK_URL --repo "$R"
    ```
 
+   Push notifications need a key pair: run `pnpm vapid:keys` once in the umbrella, then store its two values:
+
+   ```sh
+   gh secret set VAPID_PUBLIC_KEY --repo "$R"
+   gh secret set VAPID_PRIVATE_KEY --repo "$R"
+   ```
+
    `TOFU_STATE_BUCKET` may name a bucket shared with other products or installs: this install's state key in it is `unaria/<install hostname>/terraform.tfstate`.
 
 4. **Plan, then deploy:**
