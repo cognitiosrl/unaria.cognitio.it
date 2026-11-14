@@ -141,6 +141,8 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           SPARKPOST_API_KEY: ${{ secrets.SPARKPOST_API_KEY }}
           CHAT_WEBHOOK_URL: ${{ secrets.CHAT_WEBHOOK_URL }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
         run: |
           umask 077
           pnpm --filter @unaria/scripts --fail-if-no-match write-secrets-file "$RUNNER_TEMP/worker-secrets.json" --require HEALTH_TOKEN
