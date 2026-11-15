@@ -2,8 +2,9 @@
 # demand from main. The tools it runs come from that pinned umbrella's scripts package, so they
 # always match the code they deploy. pnpm exits 0 when --filter matches no package, so every command
 # selecting one passes --fail-if-no-match. Actions are pinned to commit SHAs, with the tag each
-# resolved to in the comment. The install's settings are five repository variables
-# (CLOUDFLARE_ACCOUNT_ID, WORKER_NAME, HOSTNAME, GOOGLE_CLIENT_ID, TOFU_STATE_BUCKET) and its
+# resolved to in the comment. The install's settings are seven repository variables
+# (CLOUDFLARE_ACCOUNT_ID, WORKER_NAME, HOSTNAME, GOOGLE_CLIENT_ID, MICROSOFT_CLIENT_ID,
+# MICROSOFT_TENANT_ID, TOFU_STATE_BUCKET) and its
 # reviewed values committed in wrangler.jsonc; only credentials are repository secrets. The
 # Cloudflare API token reaches only the steps that create the resources, apply the migrations,
 # deploy and read the deployment status; the state's passphrase only the OpenTofu step;
@@ -94,8 +95,9 @@ jobs:
           tofu_wrapper: false
       # Creates the state bucket when the account has none of that name, plans, and applies unless
       # the plan deletes or replaces a resource. The outputs (the resources' names and ids, and the
-      # generated HEALTH_TOKEN, masked first) become this step's outputs. A run started by hand with
-      # plan_only stops after the plan, and every later step but the clean-up skips.
+      # generated HEALTH_TOKEN and SETTINGS_KEY, masked first) become this step's outputs. A run
+      # started by hand with plan_only stops after the plan, and every later step but the clean-up
+      # skips.
       - name: Create or update the Cloudflare resources
         id: infra
         working-directory: unaria-umbrella
@@ -124,6 +126,8 @@ jobs:
           WORKER_NAME: ${{ vars.WORKER_NAME }}
           HOSTNAME: ${{ vars.HOSTNAME }}
           GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          MICROSOFT_CLIENT_ID: ${{ vars.MICROSOFT_CLIENT_ID }}
+          MICROSOFT_TENANT_ID: ${{ vars.MICROSOFT_TENANT_ID }}
           RELEASE: ${{ steps.release.outputs.tag }}
           D1_DATABASE_NAME: ${{ steps.infra.outputs.D1_DATABASE_NAME }}
           D1_DATABASE_ID: ${{ steps.infra.outputs.D1_DATABASE_ID }}
@@ -132,20 +136,19 @@ jobs:
           JOBS_DEAD_LETTER_QUEUE_NAME: ${{ steps.infra.outputs.JOBS_DEAD_LETTER_QUEUE_NAME }}
         run: pnpm --filter @unaria/scripts --fail-if-no-match fill-config "$GITHUB_WORKSPACE/wrangler.jsonc" "$GITHUB_WORKSPACE/wrangler.filled.jsonc"
       # Only this step holds the secrets' values: a new file readable by this user only, refused
-      # when the generated HEALTH_TOKEN is missing; an optional secret with no value is left out.
+      # when a generated HEALTH_TOKEN or SETTINGS_KEY is missing; an optional secret with no value is
+      # left out. Mail, alert and push secrets are the Owners' to enter in the app, not the deploy's.
       - name: Write the Worker secrets file
         if: ${{ !inputs.plan_only }}
         working-directory: unaria-umbrella
         env:
           HEALTH_TOKEN: ${{ steps.infra.outputs.HEALTH_TOKEN }}
+          SETTINGS_KEY: ${{ steps.infra.outputs.SETTINGS_KEY }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          SPARKPOST_API_KEY: ${{ secrets.SPARKPOST_API_KEY }}
-          CHAT_WEBHOOK_URL: ${{ secrets.CHAT_WEBHOOK_URL }}
-          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
-          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          MICROSOFT_CLIENT_SECRET: ${{ secrets.MICROSOFT_CLIENT_SECRET }}
         run: |
           umask 077
-          pnpm --filter @unaria/scripts --fail-if-no-match write-secrets-file "$RUNNER_TEMP/worker-secrets.json" --require HEALTH_TOKEN
+          pnpm --filter @unaria/scripts --fail-if-no-match write-secrets-file "$RUNNER_TEMP/worker-secrets.json" --require HEALTH_TOKEN,SETTINGS_KEY
       # Against the umbrella's configuration schema and cron registry and the release's
       # install-template/wrangler.jsonc, with the secrets the deploy uploads; it names each refused
       # key and never a secret's value.
